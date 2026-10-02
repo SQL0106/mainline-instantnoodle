@@ -3,6 +3,10 @@ run-name: vanilla 6.16.7 boot.img
 on:
   workflow_dispatch:
 
+env:
+  CCACHE_MAXSIZE: 2G
+  CCACHE_COMPRESS: "1"
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -12,18 +16,30 @@ jobs:
       - name: install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld llvm bc bison flex libssl-dev libelf-dev cpio
+          sudo apt-get install -y clang lld llvm bc bison flex libssl-dev libelf-dev cpio ccache
+
+      - name: restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('bootpack/config-6.16.7') }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ hashFiles('bootpack/config-6.16.7') }}-
+            ccache-${{ runner.os }}-
 
       - name: configure
         run: |
+          mkdir -p ~/.cache/ccache
+          ccache --set-config=cache_dir="$HOME/.cache/ccache"
           cp bootpack/config-6.16.7 .config
-          make ARCH=arm64 LLVM=1 olddefconfig
+          make ARCH=arm64 LLVM=1 LLVM_CCACHE=1 olddefconfig
           (diff -u bootpack/config-6.16.7 .config > config-drift.diff || true)
 
       - name: build kernel + dtb
         run: |
-          make ARCH=arm64 LLVM=1 -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
+          make ARCH=arm64 LLVM=1 LLVM_CCACHE=1 -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
           ls -la arch/arm64/boot/Image.gz arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
+          ccache -s | tee ccache-stats.txt
 
       - name: pack boot images
         run: |
@@ -36,13 +52,28 @@ jobs:
           python3 bootpack/pack_bootimg.py --kernel Image.gz-refdtb --ramdisk bootpack/ramdisk_from_boot.img --cmdline "$CMDLINE" --output boot-refdtb.img
           cp "$DTB" sm8250-oneplus-instantnoodle-built.dtb
 
-      - name: upload
+      - name: upload kernel artifacts (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: |
+            arch/arm64/boot/Image.gz
+            arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
+            .config
+            config-drift.diff
+            ccache-stats.txt
+          if-no-files-found: warn
+
+      - name: upload boot images (always)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: boot-img
           path: |
             boot.img
             boot-refdtb.img
+            Image.gz-dtb
+            Image.gz-refdtb
             sm8250-oneplus-instantnoodle-built.dtb
-            config-drift.diff
-          if-no-files-found: error
+          if-no-files-found: warn
