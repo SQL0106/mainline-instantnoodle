@@ -45,7 +45,7 @@ jobs:
         run: |
           set -e
           DTB=arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
-          CMDLINE='root=/dev/sda24 rw console=tty0 loglevel=3'
+          CMDLINE='root=/dev/sda24 rw console=tty0 loglevel=7'
           cat arch/arm64/boot/Image.gz "$DTB" > Image.gz-dtb
           python3 bootpack/pack_bootimg.py --kernel Image.gz-dtb --ramdisk bootpack/ramdisk_from_boot.img --cmdline "$CMDLINE" --output boot.img
           cat arch/arm64/boot/Image.gz bootpack/dtb_appended.dtb > Image.gz-refdtb
