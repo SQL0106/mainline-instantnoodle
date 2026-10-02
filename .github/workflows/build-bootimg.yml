@@ -32,12 +32,12 @@ jobs:
           mkdir -p ~/.cache/ccache
           ccache --set-config=cache_dir="$HOME/.cache/ccache"
           cp bootpack/config-6.16.7 .config
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc" olddefconfig
           (diff -u bootpack/config-6.16.7 .config > config-drift.diff || true)
 
       - name: build kernel + dtb
         run: |
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc" -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
           ls -la arch/arm64/boot/Image.gz arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
           ccache -s | tee ccache-stats.txt
 
