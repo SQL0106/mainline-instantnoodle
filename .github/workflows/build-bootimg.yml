@@ -16,7 +16,7 @@ jobs:
       - name: install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld llvm bc bison flex libssl-dev libelf-dev cpio ccache
+          sudo apt-get install -y gcc-aarch64-linux-gnu bc bison flex libssl-dev libelf-dev cpio ccache
 
       - name: restore ccache
         uses: actions/cache@v4
@@ -32,12 +32,12 @@ jobs:
           mkdir -p ~/.cache/ccache
           ccache --set-config=cache_dir="$HOME/.cache/ccache"
           cp bootpack/config-6.16.7 .config
-          make ARCH=arm64 LLVM=1 LLVM_CCACHE=1 olddefconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           (diff -u bootpack/config-6.16.7 .config > config-drift.diff || true)
 
       - name: build kernel + dtb
         run: |
-          make ARCH=arm64 LLVM=1 LLVM_CCACHE=1 -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
           ls -la arch/arm64/boot/Image.gz arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
           ccache -s | tee ccache-stats.txt
 
@@ -45,7 +45,7 @@ jobs:
         run: |
           set -e
           DTB=arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
-          CMDLINE='root=/dev/sda24 rw console=tty0 loglevel=3'
+          CMDLINE='root=/dev/sda24 rw console=tty0 ignore_loglevel loglevel=8'
           cat arch/arm64/boot/Image.gz "$DTB" > Image.gz-dtb
           python3 bootpack/pack_bootimg.py --kernel Image.gz-dtb --ramdisk bootpack/ramdisk_from_boot.img --cmdline "$CMDLINE" --output boot.img
           cat arch/arm64/boot/Image.gz bootpack/dtb_appended.dtb > Image.gz-refdtb
