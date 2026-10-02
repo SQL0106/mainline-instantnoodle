@@ -1,0 +1,48 @@
+name: build-bootimg
+run-name: vanilla 6.16.7 boot.img
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm bc bison flex libssl-dev libelf-dev cpio
+
+      - name: configure
+        run: |
+          cp bootpack/config-6.16.7 .config
+          make ARCH=arm64 LLVM=1 olddefconfig
+          (diff -u bootpack/config-6.16.7 .config > config-drift.diff || true)
+
+      - name: build kernel + dtb
+        run: |
+          make ARCH=arm64 LLVM=1 -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
+          ls -la arch/arm64/boot/Image.gz arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
+
+      - name: pack boot images
+        run: |
+          set -e
+          DTB=arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
+          CMDLINE='root=/dev/sda24 rw console=tty0 loglevel=3'
+          cat arch/arm64/boot/Image.gz "$DTB" > Image.gz-dtb
+          python3 bootpack/pack_bootimg.py --kernel Image.gz-dtb --ramdisk bootpack/ramdisk_from_boot.img --cmdline "$CMDLINE" --output boot.img
+          cat arch/arm64/boot/Image.gz bootpack/dtb_appended.dtb > Image.gz-refdtb
+          python3 bootpack/pack_bootimg.py --kernel Image.gz-refdtb --ramdisk bootpack/ramdisk_from_boot.img --cmdline "$CMDLINE" --output boot-refdtb.img
+          cp "$DTB" sm8250-oneplus-instantnoodle-built.dtb
+
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-img
+          path: |
+            boot.img
+            boot-refdtb.img
+            sm8250-oneplus-instantnoodle-built.dtb
+            config-drift.diff
+          if-no-files-found: error
