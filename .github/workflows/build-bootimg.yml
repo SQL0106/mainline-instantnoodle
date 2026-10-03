@@ -49,8 +49,8 @@ jobs:
           set -e
           DTB=arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
           # netconsole over USB gadget ethernet; IPs assembled from octets on purpose
-          A=172; B=20; C=4; D=5   # phone src
-          E=172; F=20; G=4; H=6   # PC receiver (udev gives it ${E}.${F}.${G}.${H}/30)
+          A=172; B=16; C=42; D=5   # phone src
+          E=172; F=16; G=42; H=6   # PC receiver (udev gives it ${E}.${F}.${G}.${H}/30)
           CMDLINE="root=/dev/sda24 rw console=tty0 ignore_loglevel loglevel=8 netconsole=6666@${A}.${B}.${C}.${D}/usb0,6666@${E}.${F}.${G}.${H}/"
           cat arch/arm64/boot/Image.gz "$DTB" > Image.gz-dtb
           # inject init-bottom script that dumps dmesg to /var/log/early-dmesg.txt
