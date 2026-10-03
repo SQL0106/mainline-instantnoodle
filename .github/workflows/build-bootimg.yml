@@ -84,7 +84,7 @@ jobs:
             '  echo 8e:4e:0f:8c:59:58 > /sys/kernel/config/netconsole/t0/remote_mac' \
             '  echo 1 > /sys/kernel/config/netconsole/t0/enabled && echo "NC-CFGFS enabled" > /dev/kmsg || echo "NC-CFGFS FAIL" > /dev/kmsg' \
             'fi' \
-            '( while true; do echo "NC-PULSE $(date +%s)" > /dev/kmsg; sleep 2; done ) &' \
+            '( n=0; while [ $n -lt 3000 ]; do echo "NC-PULSE $n $(date +%s)" > /dev/kmsg 2>/dev/null; /bin/sleep 3 2>/dev/null || sleep 3 2>/dev/null || busybox sleep 3 2>/dev/null || break; n=$((n+1)); done ) &' \
             'exit 0' \
             > rd/scripts/init-bottom/00-netconsole-up
           chmod 755 rd/scripts/init-bottom/00-netconsole-up
