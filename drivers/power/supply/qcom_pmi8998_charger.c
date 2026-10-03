@@ -409,7 +409,43 @@ static enum power_supply_property smb2_properties[] = {
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_USB_TYPE,
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
 };
+
+static int smb2_set_charge_behaviour(struct smb2_chip *chip, int behaviour)
+{
+	unsigned int val;
+
+	switch (behaviour) {
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
+		val = CHARGING_ENABLE_CMD_BIT;
+		break;
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE:
+		val = 0;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return regmap_update_bits(chip->regmap, chip->base + CHARGING_ENABLE_CMD,
+				  CHARGING_ENABLE_CMD_BIT, val);
+}
+
+static int smb2_get_charge_behaviour(struct smb2_chip *chip, int *behaviour)
+{
+	unsigned int val;
+	int ret;
+
+	ret = regmap_read(chip->regmap, chip->base + CHARGING_ENABLE_CMD, &val);
+	if (ret)
+		return ret;
+
+	*behaviour = (val & CHARGING_ENABLE_CMD_BIT) ?
+		POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO :
+		POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
+
+	return 0;
+}
 
 static int smb2_get_prop_usb_online(struct smb2_chip *chip, int *val)
 {
@@ -680,6 +716,8 @@ static int smb2_get_property(struct power_supply *psy,
 		return smb2_get_prop_health(chip, &val->intval);
 	case POWER_SUPPLY_PROP_USB_TYPE:
 		return smb2_apsd_get_charger_type(chip, &val->intval);
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		return smb2_get_charge_behaviour(chip, &val->intval);
 	default:
 		dev_err(chip->dev, "invalid property: %d\n", psp);
 		return -EINVAL;
@@ -695,6 +733,8 @@ static int smb2_set_property(struct power_supply *psy,
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		return smb2_set_current_limit(chip, val->intval);
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		return smb2_set_charge_behaviour(chip, val->intval);
 	default:
 		dev_err(chip->dev, "No setter for property: %d\n", psp);
 		return -EINVAL;
@@ -706,6 +746,7 @@ static int smb2_property_is_writable(struct power_supply *psy,
 {
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
 		return 1;
 	default:
 		return 0;
@@ -1033,6 +1074,7 @@ static int smb2_probe(struct platform_device *pdev)
 static const struct of_device_id smb2_match_id_table[] = {
 	{ .compatible = "qcom,pmi8998-charger", .data = "pmi8998" },
 	{ .compatible = "qcom,pm660-charger", .data = "pm660" },
+	{ .compatible = "qcom,pm8150b-charger", .data = "pm8150b" },
 	{ /* sentinal */ }
 };
 MODULE_DEVICE_TABLE(of, smb2_match_id_table);
