@@ -71,6 +71,19 @@ jobs:
             'sleep 2' \
             '/sbin/ip link set usb0 down 2>/dev/null || true' \
             '/sbin/ip link set usb0 up' \
+            'sleep 1' \
+            'mount -t configfs configfs /sys/kernel/config 2>/dev/null || true' \
+            'i=0; while [ ! -d /sys/kernel/config/netconsole ] && [ $i -lt 10 ]; do sleep 1; i=$((i+1)); done' \
+            'if [ -d /sys/kernel/config/netconsole ]; then' \
+            '  mkdir -p /sys/kernel/config/netconsole/t0' \
+            '  echo usb0 > /sys/kernel/config/netconsole/t0/dev_name' \
+            '  echo 172.16.42.5 > /sys/kernel/config/netconsole/t0/local_ip' \
+            '  echo 6666 > /sys/kernel/config/netconsole/t0/local_port' \
+            '  echo 172.16.42.6 > /sys/kernel/config/netconsole/t0/remote_ip' \
+            '  echo 6666 > /sys/kernel/config/netconsole/t0/remote_port' \
+            '  echo 8e:4e:0f:8c:59:58 > /sys/kernel/config/netconsole/t0/remote_mac' \
+            '  echo 1 > /sys/kernel/config/netconsole/t0/enabled && echo "NC-CFGFS enabled" > /dev/kmsg || echo "NC-CFGFS FAIL" > /dev/kmsg' \
+            'fi' \
             '( while true; do echo "NC-PULSE $(date +%s)" > /dev/kmsg; sleep 2; done ) &' \
             'exit 0' \
             > rd/scripts/init-bottom/00-netconsole-up
