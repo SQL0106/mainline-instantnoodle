@@ -37,7 +37,10 @@ jobs:
 
       - name: build kernel + dtb
         run: |
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc" -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
+          LOCALVERSION= make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc" -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
+          REL=$(LOCALVERSION= make -s kernelrelease)
+          echo "kernelrelease=$REL"
+          test "$REL" = "6.16.7" || { echo "ERROR: kernelrelease must be exactly 6.16.7, got $REL"; exit 1; }
           ls -la arch/arm64/boot/Image.gz arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
           ccache -s | tee ccache-stats.txt
 
