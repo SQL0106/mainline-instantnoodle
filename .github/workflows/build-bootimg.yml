@@ -59,17 +59,15 @@ jobs:
           install -m755 bootpack/init-bottom-save-dmesg rd/scripts/init-bottom/save-dmesg
           grep -q 'init-bottom/save-dmesg' rd/scripts/init-bottom/ORDER || printf '\n/scripts/init-bottom/save-dmesg "$@"\n' >> rd/scripts/init-bottom/ORDER
           # bring usb0 (g_ether built-in) UP so netconsole can send from initramfs
-          cat > rd/scripts/init-bottom/00-netconsole-up <<'NETEOF'
-#!/bin/sh
-PREREQ=""
-prereqs() { echo "$PREREQ"; }
-case "$1" in prereqs) prereqs; exit 0;; esac
-if [ -e /sys/class/net/usb0 ]; then
-    /sbin/ip link set usb0 up
-    /sbin/ip addr add 172.16.42.5/16 dev usb0 2>/dev/null || true
-fi
-exit 0
-NETEOF
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'PREREQ=""' \
+            'prereqs() { echo "$PREREQ"; }' \
+            'case "$1" in prereqs) prereqs; exit 0;; esac' \
+            '[ -e /sys/class/net/usb0 ] && /sbin/ip link set usb0 up' \
+            '[ -e /sys/class/net/usb0 ] && /sbin/ip addr add 172.16.42.5/16 dev usb0' \
+            'exit 0' \
+            > rd/scripts/init-bottom/00-netconsole-up
           chmod 755 rd/scripts/init-bottom/00-netconsole-up
           # run it FIRST in init-bottom, before udev
           if grep -q '00-netconsole-up' rd/scripts/init-bottom/ORDER; then
