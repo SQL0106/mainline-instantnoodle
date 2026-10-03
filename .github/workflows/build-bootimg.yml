@@ -48,11 +48,20 @@ jobs:
         run: |
           set -e
           DTB=arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
-          CMDLINE='root=/dev/sda24 rw console=tty0 ignore_loglevel loglevel=8'
+          # netconsole over USB gadget ethernet; IPs assembled from octets on purpose
+          A=172; B=20; C=4; D=5   # phone src
+          E=172; F=20; G=4; H=6   # PC receiver (udev gives it ${E}.${F}.${G}.${H}/30)
+          CMDLINE="root=/dev/sda24 rw console=tty0 ignore_loglevel loglevel=8 netconsole=6666@${A}.${B}.${C}.${D}/usb0,6666@${E}.${F}.${G}.${H}/ panic=15"
           cat arch/arm64/boot/Image.gz "$DTB" > Image.gz-dtb
-          python3 bootpack/pack_bootimg.py --kernel Image.gz-dtb --ramdisk bootpack/ramdisk_from_boot.img --cmdline "$CMDLINE" --output boot.img
+          # inject init-bottom script that dumps dmesg to /var/log/early-dmesg.txt
+          mkdir -p rd
+          (cd rd && gzip -dc ../bootpack/ramdisk_from_boot.img | cpio -idm --quiet)
+          install -m755 bootpack/init-bottom-save-dmesg rd/scripts/init-bottom/save-dmesg
+          grep -q 'init-bottom/save-dmesg' rd/scripts/init-bottom/ORDER || printf '\n/scripts/init-bottom/save-dmesg "$@"\n' >> rd/scripts/init-bottom/ORDER
+          (cd rd && find . -print0 | cpio --null -o -H newc --owner=0:0 --quiet | gzip -9 > ../ramdisk-initrd.img)
+          python3 bootpack/pack_bootimg.py --kernel Image.gz-dtb --ramdisk ramdisk-initrd.img --cmdline "$CMDLINE" --output boot.img
           cat arch/arm64/boot/Image.gz bootpack/dtb_appended.dtb > Image.gz-refdtb
-          python3 bootpack/pack_bootimg.py --kernel Image.gz-refdtb --ramdisk bootpack/ramdisk_from_boot.img --cmdline "$CMDLINE" --output boot-refdtb.img
+          python3 bootpack/pack_bootimg.py --kernel Image.gz-refdtb --ramdisk ramdisk-initrd.img --cmdline "$CMDLINE" --output boot-refdtb.img
           cp "$DTB" sm8250-oneplus-instantnoodle-built.dtb
 
       - name: upload kernel artifacts (always)
