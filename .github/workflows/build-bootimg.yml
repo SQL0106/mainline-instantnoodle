@@ -68,6 +68,10 @@ jobs:
             '[ -e /sys/class/net/usb0 ] || exit 0' \
             '/sbin/ip addr add 172.16.42.5/16 dev usb0 2>/dev/null || true' \
             '/sbin/ip link set usb0 up' \
+            'sleep 2' \
+            '/sbin/ip link set usb0 down 2>/dev/null || true' \
+            '/sbin/ip link set usb0 up' \
+            '( while true; do echo "NC-PULSE $(date +%s)" > /dev/kmsg; sleep 2; done ) &' \
             'exit 0' \
             > rd/scripts/init-bottom/00-netconsole-up
           chmod 755 rd/scripts/init-bottom/00-netconsole-up
