@@ -64,8 +64,10 @@ jobs:
             'PREREQ=""' \
             'prereqs() { echo "$PREREQ"; }' \
             'case "$1" in prereqs) prereqs; exit 0;; esac' \
-            '[ -e /sys/class/net/usb0 ] && /sbin/ip link set usb0 up' \
-            '[ -e /sys/class/net/usb0 ] && /sbin/ip addr add 172.16.42.5/16 dev usb0' \
+            'i=0; while [ ! -e /sys/class/net/usb0 ] && [ $i -lt 20 ]; do sleep 1; i=$((i+1)); done' \
+            '[ -e /sys/class/net/usb0 ] || exit 0' \
+            '/sbin/ip addr add 172.16.42.5/16 dev usb0 2>/dev/null || true' \
+            '/sbin/ip link set usb0 up' \
             'exit 0' \
             > rd/scripts/init-bottom/00-netconsole-up
           chmod 755 rd/scripts/init-bottom/00-netconsole-up
