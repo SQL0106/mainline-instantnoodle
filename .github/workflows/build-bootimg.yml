@@ -58,6 +58,28 @@ jobs:
           (cd rd && gzip -dc ../bootpack/ramdisk_from_boot.img | cpio -idm --quiet)
           install -m755 bootpack/init-bottom-save-dmesg rd/scripts/init-bottom/save-dmesg
           grep -q 'init-bottom/save-dmesg' rd/scripts/init-bottom/ORDER || printf '\n/scripts/init-bottom/save-dmesg "$@"\n' >> rd/scripts/init-bottom/ORDER
+          # bring usb0 (g_ether built-in) UP so netconsole can send from initramfs
+          cat > rd/scripts/init-bottom/00-netconsole-up <<'NETEOF'
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0;; esac
+if [ -e /sys/class/net/usb0 ]; then
+    /sbin/ip link set usb0 up
+    /sbin/ip addr add 172.16.42.5/16 dev usb0 2>/dev/null || true
+fi
+exit 0
+NETEOF
+          chmod 755 rd/scripts/init-bottom/00-netconsole-up
+          # run it FIRST in init-bottom, before udev
+          if grep -q '00-netconsole-up' rd/scripts/init-bottom/ORDER; then
+            echo 'netconsole-up already in ORDER'
+          else
+            printf '/scripts/init-bottom/00-netconsole-up "$@"\n' > rd/tmp_ORDER
+            cat rd/scripts/init-bottom/ORDER >> rd/tmp_ORDER
+            mv rd/tmp_ORDER rd/scripts/init-bottom/ORDER
+          fi
+          echo '--- init-bottom ORDER ---'; cat rd/scripts/init-bottom/ORDER
           (cd rd && find . -print0 | cpio --null -o -H newc --owner=0:0 --quiet | gzip -9 > ../ramdisk-initrd.img)
           python3 bootpack/pack_bootimg.py --kernel Image.gz-dtb --ramdisk ramdisk-initrd.img --cmdline "$CMDLINE" --output boot.img
           cat arch/arm64/boot/Image.gz bootpack/dtb_appended.dtb > Image.gz-refdtb
