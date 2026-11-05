@@ -1,0 +1,49 @@
+name: build-charger-module
+
+# 只编 qcom_smbx.ko（PM8150B / SMB5 充电驱动），不编整核。
+# 目的：在已经跑起来的 oneplus8 上 insmod 测试，避免 fastboot boot 新内核时
+# “起不到用户态就没有任何日志”的死角。
+on:
+  workflow_dispatch:
+
+jobs:
+  build-module:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            bc bison flex libssl-dev libelf-dev
+
+      - name: configure (=m) + modules_prepare
+        run: |
+          set -eux
+          cp bootpack/config-6.16.7 .config
+          # 只把充电驱动改成模块，其余配置保持与 boot.img 完全一致
+          scripts/config --module CHARGER_QCOM_SMB2
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
+
+      - name: build module
+        run: |
+          set -eux
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+               M=drivers/power/supply modules
+
+      - name: show vermagic
+        run: |
+          set -eux
+          ls -l drivers/power/supply/*.ko
+          MOD=$(ls drivers/power/supply/qcom_smbx.ko)
+          echo "vermagic: $(modinfo -F vermagic "$MOD" || true)"
+          file "$MOD"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: charger-module
+          path: drivers/power/supply/qcom_smbx.ko
+          if-no-files-found: error
