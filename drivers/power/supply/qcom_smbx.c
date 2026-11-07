@@ -866,6 +866,12 @@ static int smb_set_property(struct power_supply *psy,
 			chip->charge_end_threshold = val->intval;
 		else
 			chip->charge_start_threshold = val->intval;
+		/* Clearing both thresholds must not leave charging inhibited. */
+		if (!chip->charge_end_threshold && !chip->charge_start_threshold &&
+		    chip->charge_inhibited) {
+			chip->charge_inhibited = false;
+			return smb_set_charge_enable(chip, true);
+		}
 		schedule_delayed_work(&chip->charge_ctrl_work, 0);
 		return 0;
 	default:
@@ -945,6 +951,8 @@ static const struct power_supply_desc smb_psy_desc = {
 		     BIT(POWER_SUPPLY_USB_TYPE_CDP) |
 		     BIT(POWER_SUPPLY_USB_TYPE_DCP) |
 		     BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN),
+	.charge_behaviours = BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |
+			     BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE),
 	.properties = smb_properties,
 	.num_properties = ARRAY_SIZE(smb_properties),
 	.get_property = smb_get_property,
