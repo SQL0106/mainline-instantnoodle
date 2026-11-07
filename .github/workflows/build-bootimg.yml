@@ -16,29 +16,31 @@ jobs:
       - name: install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu bc bison flex libssl-dev libelf-dev cpio ccache
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-14-aarch64-linux-gnu bc bison flex libssl-dev libelf-dev cpio ccache
+          # 与手机在用内核（Debian gcc 14.2.0）保持同版本编译器：CI 默认是 gcc 13.3
+          aarch64-linux-gnu-gcc-14 --version | head -1
 
       - name: restore ccache
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-${{ hashFiles('bootpack/config-6.16.7') }}-${{ github.run_id }}
+          key: ccache-gcc14-${{ runner.os }}-${{ hashFiles('bootpack/config-6.16.7') }}-${{ github.run_id }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ hashFiles('bootpack/config-6.16.7') }}-
-            ccache-${{ runner.os }}-
+            ccache-gcc14-${{ runner.os }}-${{ hashFiles('bootpack/config-6.16.7') }}-
+            ccache-gcc14-${{ runner.os }}-$
 
       - name: configure
         run: |
           mkdir -p ~/.cache/ccache
           ccache --set-config=cache_dir="$HOME/.cache/ccache"
           cp bootpack/config-6.16.7 .config
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc" olddefconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc-14" olddefconfig
           (diff -u bootpack/config-6.16.7 .config > config-drift.diff || true)
 
       - name: build kernel + dtb
         run: |
-          LOCALVERSION= make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc" -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
-          REL=$(LOCALVERSION= make -s kernelrelease)
+          LOCALVERSION= make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc-14" -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
+          REL=$(LOCALVERSION= make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc-14" kernelrelease)
           echo "kernelrelease=$REL"
           test "$REL" = "6.16.7" || { echo "ERROR: kernelrelease must be exactly 6.16.7, got $REL"; exit 1; }
           ls -la arch/arm64/boot/Image.gz arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
