@@ -1,0 +1,24 @@
+#!/bin/sh
+# Save the early kernel log to the real root filesystem so that a hung
+# boot can be diagnosed after the next successful boot.
+PREREQ()
+
+prereqs()
+{
+	echo ""
+}
+
+case "${1}" in
+	prereqs)
+		prereqs
+		exit 1
+		;;
+esac
+
+. /scripts/functions
+
+log_begin_msg "Saving dmesg to ${rootmnt}/var/log/early-dmesg.txt"
+mkdir -p "${rootmnt}/var/log"
+dmesg > "${rootmnt}/var/log/early-dmesg.txt" 2>/dev/null ||
+	dmesg > "${rootmnt}/run/early-dmesg.txt" 2>/dev/null
+log_end_msg

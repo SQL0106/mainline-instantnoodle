@@ -1,0 +1,137 @@
+name: build-bootimg
+run-name: op8_defconfig 6.16.7 boot.img
+on:
+  workflow_dispatch:
+
+env:
+  CCACHE_MAXSIZE: 2G
+  CCACHE_COMPRESS: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-14-aarch64-linux-gnu bc bison flex libssl-dev libelf-dev cpio ccache
+          # 与手机在用内核（Debian gcc 14.2.0）保持同版本编译器：CI 默认是 gcc 13.3
+          aarch64-linux-gnu-gcc-14 --version | head -1
+
+      - name: restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-gcc14-op8defconfig-${{ runner.os }}-${{ hashFiles('arch/arm64/configs/op8_defconfig') }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-gcc14-op8defconfig-${{ runner.os }}-${{ hashFiles('arch/arm64/configs/op8_defconfig') }}-
+            ccache-gcc14-op8defconfig-${{ runner.os }}-
+            ccache-gcc14-${{ runner.os }}-
+
+      - name: configure
+        run: |
+          mkdir -p ~/.cache/ccache
+          ccache --set-config=cache_dir="$HOME/.cache/ccache"
+          # 用仓库里真正的 op8_defconfig 生成 .config（不是 CI 专用的裁剪配置）
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc-14" op8_defconfig
+          (diff -u arch/arm64/configs/op8_defconfig .config > config-drift.diff || true)
+          echo '--- SMB2 / charger ---'
+          grep -E 'CONFIG_CHARGER_QCOM_SMB2|CONFIG_PM8150|CONFIG_NETCONSOLE' .config || true
+          echo '--- drift ---'
+          cat config-drift.diff || true
+
+      - name: build kernel + dtb
+        run: |
+          LOCALVERSION= make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc-14" -j"$(nproc)" Image.gz qcom/sm8250-oneplus-instantnoodle.dtb
+          REL=$(LOCALVERSION= make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache aarch64-linux-gnu-gcc-14" kernelrelease)
+          echo "kernelrelease=$REL"
+          echo "WARN: kernelrelease=$REL (op8_defconfig 自带 LOCALVERSION，不阻塞构建)"
+          ls -la arch/arm64/boot/Image.gz arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
+          ccache -s | tee ccache-stats.txt
+
+      - name: pack boot images
+        run: |
+          set -e
+          DTB=arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
+          # netconsole over USB gadget ethernet; IPs assembled from octets on purpose
+          A=172; B=16; C=42; D=5   # phone src
+          E=172; F=16; G=42; H=6   # PC receiver (udev gives it ${E}.${F}.${G}.${H}/30)
+          CMDLINE="root=/dev/sda24 rw console=tty0 ignore_loglevel loglevel=8 netconsole=6666@${A}.${B}.${C}.${D}/usb0,6666@${E}.${F}.${G}.${H}/ softlockup_panic=1 hung_task_panic=1 nmi_watchdog=1 hardlockup_panic=1 panic=15"
+          cat arch/arm64/boot/Image.gz "$DTB" > Image.gz-dtb
+          # inject init-bottom script that dumps dmesg to /var/log/early-dmesg.txt
+          mkdir -p rd
+          (cd rd && gzip -dc ../bootpack/ramdisk_from_boot.img | cpio -idm --quiet)
+          install -m755 bootpack/init-bottom-save-dmesg rd/scripts/init-bottom/save-dmesg
+          grep -q 'init-bottom/save-dmesg' rd/scripts/init-bottom/ORDER || printf '\n/scripts/init-bottom/save-dmesg "$@"\n' >> rd/scripts/init-bottom/ORDER
+          # bring usb0 (g_ether built-in) UP so netconsole can send from initramfs
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'PREREQ=""' \
+            'prereqs() { echo "$PREREQ"; }' \
+            'case "$1" in prereqs) prereqs; exit 0;; esac' \
+            'i=0; while [ ! -e /sys/class/net/usb0 ] && [ $i -lt 20 ]; do sleep 1; i=$((i+1)); done' \
+            '[ -e /sys/class/net/usb0 ] || exit 0' \
+            '/sbin/ip addr add 172.16.42.5/16 dev usb0 2>/dev/null || true' \
+            '/sbin/ip link set usb0 up' \
+            'sleep 2' \
+            '/sbin/ip link set usb0 down 2>/dev/null || true' \
+            '/sbin/ip link set usb0 up' \
+            'sleep 1' \
+            'mount -t configfs configfs /sys/kernel/config 2>/dev/null || true' \
+            'i=0; while [ ! -d /sys/kernel/config/netconsole ] && [ $i -lt 10 ]; do sleep 1; i=$((i+1)); done' \
+            'if [ -d /sys/kernel/config/netconsole ]; then' \
+            '  mkdir -p /sys/kernel/config/netconsole/t0' \
+            '  echo usb0 > /sys/kernel/config/netconsole/t0/dev_name' \
+            '  echo 172.16.42.5 > /sys/kernel/config/netconsole/t0/local_ip' \
+            '  echo 6666 > /sys/kernel/config/netconsole/t0/local_port' \
+            '  echo 172.16.42.6 > /sys/kernel/config/netconsole/t0/remote_ip' \
+            '  echo 6666 > /sys/kernel/config/netconsole/t0/remote_port' \
+            '  echo 8e:4e:0f:8c:59:58 > /sys/kernel/config/netconsole/t0/remote_mac' \
+            '  echo 1 > /sys/kernel/config/netconsole/t0/enabled && echo "NC-CFGFS enabled" > /dev/kmsg || echo "NC-CFGFS FAIL" > /dev/kmsg' \
+            'fi' \
+            '( n=0; while [ $n -lt 3000 ]; do echo "NC-PULSE $n $(date +%s)" > /dev/kmsg 2>/dev/null; /bin/sleep 3 2>/dev/null || sleep 3 2>/dev/null || busybox sleep 3 2>/dev/null || break; n=$((n+1)); done ) &' \
+            'exit 0' \
+            > rd/scripts/init-bottom/00-netconsole-up
+          chmod 755 rd/scripts/init-bottom/00-netconsole-up
+          # run it FIRST in init-bottom, before udev
+          if grep -q '00-netconsole-up' rd/scripts/init-bottom/ORDER; then
+            echo 'netconsole-up already in ORDER'
+          else
+            printf '/scripts/init-bottom/00-netconsole-up "$@"\n' > rd/tmp_ORDER
+            cat rd/scripts/init-bottom/ORDER >> rd/tmp_ORDER
+            mv rd/tmp_ORDER rd/scripts/init-bottom/ORDER
+          fi
+          echo '--- init-bottom ORDER ---'; cat rd/scripts/init-bottom/ORDER
+          (cd rd && find . -print0 | cpio --null -o -H newc --owner=0:0 --quiet | gzip -9 > ../ramdisk-initrd.img)
+          python3 bootpack/pack_bootimg.py --kernel Image.gz-dtb --ramdisk ramdisk-initrd.img --cmdline "$CMDLINE" --output boot.img
+          cat arch/arm64/boot/Image.gz bootpack/dtb_appended.dtb > Image.gz-refdtb
+          python3 bootpack/pack_bootimg.py --kernel Image.gz-refdtb --ramdisk ramdisk-initrd.img --cmdline "$CMDLINE" --output boot-refdtb.img
+          cp "$DTB" sm8250-oneplus-instantnoodle-built.dtb
+
+      - name: upload kernel artifacts (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: |
+            arch/arm64/boot/Image.gz
+            arch/arm64/boot/dts/qcom/sm8250-oneplus-instantnoodle.dtb
+            .config
+            config-drift.diff
+            ccache-stats.txt
+          if-no-files-found: warn
+
+      - name: upload boot images (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-img
+          path: |
+            boot.img
+            boot-refdtb.img
+            Image.gz-dtb
+            Image.gz-refdtb
+            sm8250-oneplus-instantnoodle-built.dtb
+          if-no-files-found: warn
