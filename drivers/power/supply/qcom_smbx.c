@@ -1423,6 +1423,27 @@ static int smb_probe(struct platform_device *pdev)
 	/* Initialise charger state */
 	schedule_delayed_work(&chip->status_change_work, 0);
 
+	/*
+	 * Diagnostic: dump the APSD/IRQ/fault window and the USBIN/ICL/AICL
+	 * window once at probe, so a post-mortem boot shows what the charger
+	 * block latched before the last reset. Read-only; IRQ status registers
+	 * are read-clear but nothing here depends on them.
+	 */
+	for (unsigned int r = 0x300; r <= 0x31f; r++) {
+		unsigned int v;
+
+		if (regmap_read(chip->regmap, chip->base + r, &v))
+			continue;
+		dev_info(chip->dev, "dump[0x%03x] = 0x%02x\n", r, v);
+	}
+	for (unsigned int r = 0x360; r <= 0x38f; r++) {
+		unsigned int v;
+
+		if (regmap_read(chip->regmap, chip->base + r, &v))
+			continue;
+		dev_info(chip->dev, "usbin[0x%03x] = 0x%02x\n", r, v);
+	}
+
 	return 0;
 }
 

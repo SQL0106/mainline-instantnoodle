@@ -67,6 +67,20 @@ static int pm8916_pon_probe(struct platform_device *pdev)
 	if (error)
 		return error;
 
+	/*
+	 * Diagnostic: dump the PON register block once at probe so the reason
+	 * for the previous shutdown/reset (power key, resin, usb, dc, pon1,
+	 * warm reset, fault) lands in dmesg and hence in persistent logs.
+	 * Read-only.
+	 */
+	for (unsigned int i = 0; i <= 0x1f; i++) {
+		unsigned int v;
+
+		if (regmap_read(pon->regmap, pon->baseaddr + i, &v))
+			continue;
+		dev_info(&pdev->dev, "pon[0x%02x] = 0x%02x\n", i, v);
+	}
+
 	reason_shift = (long)of_device_get_match_data(&pdev->dev);
 
 	if (reason_shift != NO_REASON_SHIFT) {
