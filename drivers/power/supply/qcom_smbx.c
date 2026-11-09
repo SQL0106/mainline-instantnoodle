@@ -281,6 +281,15 @@ struct smb_match_data {
 	unsigned int current_limit_max_ua;
 	unsigned int float_min_uv;
 	unsigned int float_step_uv;
+	/*
+	 * Board charge window, enforced by the driver from probe onwards.  It
+	 * has to live in the kernel: the sysfs thresholds are runtime state
+	 * that is lost on every reset, and until userspace writes them back the
+	 * charger happily charges past the limit (or starts below the resume
+	 * level).  Zero means "no policy, behave like the generic driver".
+	 */
+	unsigned int default_start_threshold;
+	unsigned int default_end_threshold;
 };
 
 static enum power_supply_property smb_properties[] = {
@@ -1206,6 +1215,9 @@ struct smb_match_data pm8150b_match_data = {
 	.current_limit_max_ua = 5000000,
 	.float_min_uv = 3600000,
 	.float_step_uv = 10000,
+	/* oneplus8: resume charging at 30 %, stop at 70 % (swelling protection) */
+	.default_start_threshold = 30,
+	.default_end_threshold = 70,
 };
 
 struct smb_match_data pm7250b_match_data = {
@@ -1419,6 +1431,22 @@ static int smb_probe(struct platform_device *pdev)
 	if (rc)
 		return dev_err_probe(chip->dev, rc,
 				     "Failed to init charge control work\n");
+
+	/*
+	 * Enforce the board charge window from the first moment, not from the
+	 * first userspace write: a reset re-runs this probe with charging
+	 * enabled by the init sequence, and the sysfs thresholds start at zero.
+	 * Without this the pack charges for however long userspace needs to
+	 * write the thresholds back (measured: 40 s -> +3 % over the limit).
+	 *
+	 * Run the policy work right away.  If the gauge is not readable yet the
+	 * work keeps charging enabled and retries, which is the safe direction:
+	 * an empty pack is worse than a small overshoot.
+	 */
+	chip->charge_start_threshold = match_data->default_start_threshold;
+	chip->charge_end_threshold = match_data->default_end_threshold;
+	if (chip->charge_start_threshold || chip->charge_end_threshold)
+		mod_delayed_work(system_wq, &chip->charge_ctrl_work, 0);
 
 	/* Initialise charger state */
 	schedule_delayed_work(&chip->status_change_work, 0);
