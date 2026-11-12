@@ -591,6 +591,8 @@ static void smb_status_change_work(struct work_struct *work)
 		break;
 	}
 
+	dev_info(chip->dev, "charger type %d: input limit %u uA\n",
+		 charger_type, current_ua);
 	smb_set_current_limit(chip, current_ua);
 	power_supply_changed(chip->chg_psy);
 }
@@ -1073,9 +1075,14 @@ static const struct smb_init_register smb5_init_seq[] = {
 	{ .addr = CMD_ICL_OVERRIDE,
 	  .mask = ICL_OVERRIDE_BIT,
 	  .val = 0 },
+	/*
+	 * Keep the software ICL override after APSD.  With this bit clear the
+	 * hardware reloads the APSD-detected default (about 900 mA) after the
+	 * detection completes, silently overwriting the limit set below.
+	 */
 	{ .addr = USBIN_LOAD_CFG,
 	  .mask = ICL_OVERRIDE_AFTER_APSD_BIT,
-	  .val = 0 },
+	  .val = ICL_OVERRIDE_AFTER_APSD_BIT },
 	/* Disable watchdog */
 	{ .addr = SNARL_BARK_BITE_WD_CFG, .mask = 0xff, .val = 0 },
 	{ .addr = WD_CFG,
