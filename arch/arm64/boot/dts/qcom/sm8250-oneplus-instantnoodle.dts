@@ -1644,5 +1644,10 @@
 
 &pm8150b_charger {
 	monitored-battery = <&battery>;
+	/* The OnePlus 8 PD charger can supply 5 V / 3 A; the old driver
+	 * conflated this with the battery charge current and fell back to
+	 * 1.5 A, forcing the battery to supplement the system under load.
+	 */
+	qcom,input-current-limit-microamp = <3000000>;
 	status = "okay";
 };

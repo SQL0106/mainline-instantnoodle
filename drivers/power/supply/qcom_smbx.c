@@ -232,6 +232,7 @@ struct smb_init_register {
  * @gen:		Generation of SMBx hardware block
  * @current_step_size_ua: Step size of current limits in uA
  * @current_limit_max_ua: Maximum charging current in uA
+ * @input_current_limit_ua: USB input current limit for DCP/PD sources
  * @float_min_uv:	Minimum float (CV) voltage the hardware can encode
  * @float_step_uv:	Float (CV) voltage DAC step size
  * @charge_lock:	Protects the charge control state below
@@ -251,6 +252,7 @@ struct smb_chip {
 	enum smb_generation gen;
 	unsigned int current_step_size_ua;
 	unsigned int current_limit_max_ua;
+	unsigned int input_current_limit_ua;
 	unsigned int float_min_uv;
 	unsigned int float_step_uv;
 
@@ -574,7 +576,14 @@ static void smb_status_change_work(struct work_struct *work)
 		current_ua = CDP_CURRENT_UA;
 		break;
 	case POWER_SUPPLY_USB_TYPE_DCP:
-		current_ua = chip->batt_info->constant_charge_current_max_ua;
+		/*
+		 * The old code reused the battery's constant-charge current as
+		 * the USB input limit.  That conflates two different limits and
+		 * falls back to 1.5 A on boards that do not describe the battery
+		 * charge current, leaving too little input current for the
+		 * system under load.  Use the board's explicit input limit.
+		 */
+		current_ua = chip->input_current_limit_ua;
 		break;
 	case POWER_SUPPLY_USB_TYPE_SDP:
 	default:
@@ -1316,6 +1325,12 @@ static int smb_probe(struct platform_device *pdev)
 	chip->gen = match_data->gen;
 	chip->current_step_size_ua = match_data->current_step_size_ua;
 	chip->current_limit_max_ua = match_data->current_limit_max_ua;
+	chip->input_current_limit_ua = DCP_CURRENT_UA;
+	of_property_read_u32(chip->dev->of_node,
+			     "qcom,input-current-limit-microamp",
+			     &chip->input_current_limit_ua);
+	dev_info(chip->dev, "Input current limit %u uA\n",
+		 chip->input_current_limit_ua);
 	chip->float_min_uv = match_data->float_min_uv;
 	chip->float_step_uv = match_data->float_step_uv;
 	mutex_init(&chip->charge_lock);
