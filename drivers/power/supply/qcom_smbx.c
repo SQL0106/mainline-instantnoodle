@@ -8,6 +8,7 @@
  * hardware found in pmi8998 and related PMICs.
  */
 
+#include <linux/bitops.h>
 #include <linux/bits.h>
 #include <linux/devm-helpers.h>
 #include <linux/iio/consumer.h>
@@ -19,6 +20,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_wakeirq.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
 #include <linux/types.h>
@@ -30,6 +32,20 @@ enum smb_generation {
 };
 
 #define SMB_REG_OFFSET(smb) (smb->gen == SMB2 ? 0x600 : 0x100)
+
+/*
+ * Interrupt status registers of the SMB5 sub-blocks, relative to the charger
+ * base address.  INT_RT_STS lives at +0x10 inside every peripheral.  These
+ * are used by the read-only diagnostic IRQ handlers below.
+ */
+#define SMB5_DCDC_INT_RT_STS			0x110
+#define SMB5_BATIF_INT_RT_STS			0x210
+#define SMB5_USBIN_INT_RT_STS			0x310
+
+/* PM8150-family PON block: same SPMI slave, peripheral base 0x800. */
+#define PM8150_PON_BASE				0x800
+#define PM8150_PON_REASON1			0xc0
+#define PM8150_PON_REASON_LAST			0xcf
 
 /* clang-format off */
 #define BATTERY_CHARGER_STATUS_1			0x06
@@ -1006,6 +1022,219 @@ static irqreturn_t smb_handle_wdog_bark(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+/*
+ * Diagnostic IRQ handlers.
+ *
+ * These exist purely so the power-path events that used to be invisible end
+ * up in dmesg/persistent logs.  They only read the block's INT_RT_STS and
+ * print it: no SMB5 register is written and the charging state machine is
+ * not touched.
+ */
+static irqreturn_t smb_log_irq(struct smb_chip *chip, const char *name,
+			       unsigned int rt_sts)
+{
+	unsigned int val = 0;
+	int rc;
+
+	rc = regmap_read(chip->regmap, chip->base + rt_sts, &val);
+	if (rc)
+		dev_warn(chip->dev, "IRQ %s: INT_RT_STS read failed: %d\n",
+			 name, rc);
+	else
+		dev_warn(chip->dev, "IRQ %s: INT_RT_STS=0x%02x\n", name, val);
+
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t smb_handle_usbin_collapse(int irq, void *data)
+{
+	return smb_log_irq(data, "usbin-collapse", SMB5_USBIN_INT_RT_STS);
+}
+
+static irqreturn_t smb_handle_usbin_uv(int irq, void *data)
+{
+	return smb_log_irq(data, "usbin-uv", SMB5_USBIN_INT_RT_STS);
+}
+
+static irqreturn_t smb_handle_usbin_ov(int irq, void *data)
+{
+	return smb_log_irq(data, "usbin-ov", SMB5_USBIN_INT_RT_STS);
+}
+
+static irqreturn_t smb_handle_switcher_power_ok(int irq, void *data)
+{
+	return smb_log_irq(data, "switcher-power-ok", SMB5_DCDC_INT_RT_STS);
+}
+
+static irqreturn_t smb_handle_buck_oc(int irq, void *data)
+{
+	return smb_log_irq(data, "buck-oc", SMB5_BATIF_INT_RT_STS);
+}
+
+static irqreturn_t smb_handle_vph_ov(int irq, void *data)
+{
+	return smb_log_irq(data, "vph-ov", SMB5_BATIF_INT_RT_STS);
+}
+
+static irqreturn_t smb_handle_bat_temp(int irq, void *data)
+{
+	return smb_log_irq(data, "bat-temp", SMB5_BATIF_INT_RT_STS);
+}
+
+static irqreturn_t smb_handle_bat_low(int irq, void *data)
+{
+	return smb_log_irq(data, "bat-low", SMB5_BATIF_INT_RT_STS);
+}
+
+/*
+ * PM8150 PON reset-reason tables, transcribed from the vendor
+ * qpnp-power-on.c (qpnp_pon_reason[] / qpnp_poff_reason[]).  The index into
+ * each table is (register - first_reason_reg) * 8 + lowest set bit.
+ * Read-only: nothing here writes to the PMIC.
+ */
+static const char * const smb_pon_reason[] = {
+	/* PON_REASON1, 0x8c0 */
+	"Triggered from Hard Reset (check POFF reason for the trigger)",
+	"Triggered from SMPL (Sudden Momentary Power Loss)",
+	"Triggered from RTC (RTC Alarm Expiry)",
+	"Triggered from DC (DC Charger Insertion)",
+	"Triggered from USB (USB Charger Insertion)",
+	"Triggered from PON1 (Secondary PMIC pm8150 same as CBL)",
+	"Triggered from CBL (External Power Supply/USB Charger Insertion)",
+	"Triggered from KPD (Power Key Press)",
+	/* 0x8c1 */
+	"N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",
+	/* WARM_RESET_REASON1, 0x8c2 */
+	"SOFT Triggered by Software (register write to PMIC to perform a reset)",
+	"Triggered by PS_HOLD",
+	"Triggered by PMIC Watchdog",
+	"Triggered by Keypad_Reset1 (routed internally from keypad combo)",
+	"Triggered by Keypad_Reset2 (routed internally from keypad combo)",
+	"Triggered by simultaneous KPDPWR_N + RESIN_N",
+	"Triggered by RESIN_N",
+	"Triggered by KPDPWR_N",
+	/* 0x8c3 */
+	"N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",
+	/* PON_ON_REASON, 0x8c4 */
+	"N/A", "N/A", "N/A", "N/A", "N/A", "N/A",
+	"PON_SEQ PMIC entered ON state because of a normal powering-on sequence",
+	"WARM_SEQ PMIC entered ON state because of a warm-reset sequence",
+};
+
+static const char * const smb_poff_reason[] = {
+	/* POFF_REASON1, 0x8c5 */
+	"Triggered from SOFT (register write to PMIC to perform a reset)",
+	"Triggered from PS_HOLD (PS_HOLD/MSM controlled shutdown)",
+	"Triggered from PMIC_WD (PMIC Watchdog)",
+	"Triggered from GP1 (Keypad_Reset1 routed internally from keypad combo)",
+	"Triggered from GP2 (Keypad_Reset2 routed internally from keypad combo)",
+	"Triggered from KPDPWR_AND_RESIN (Power Key and Reset Line)",
+	"Triggered from RESIN_N (Reset Line/Volume Down Key)",
+	"Triggered from KPDPWR_N (Long Power Key Hold)",
+	/* 0x8c6 */
+	"N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A",
+	/* PON_OFF_REASON, 0x8c7 */
+	"N/A", "N/A",
+	"RAW_XVDD_SHD both battery and coin-cell absent",
+	"RAW_DVDD_SHD battery removed but coin-cell present",
+	"IMMEDIATE_XVDD_SHUTDOWN S2 Reset",
+	"PMIC entered OFF state because of a S3 Reset",
+	"PMIC entered OFF state because of a fault-handling sequence",
+	"PMIC entered OFF state because of a normal powering-off sequence",
+	/* FAULT_REASON1, 0x8c8 */
+	"GP_FAULT0 VREG_FAULT_Broadcast or XO_HALT",
+	"GP_FAULT1 asserts upon PBS fault",
+	"GP_FAULT2 asserted upon PBS watchdog bite",
+	"GP_FAULT3 asserts upon SPMI watchdog bite",
+	"MGB_FAULT (Master bandgap / voltage reference)",
+	"Triggered by OVLO event (overvoltage lockout)",
+	"Triggered by UVLO event (under-voltage lockout)",
+	"Triggered by AVDD_RB event",
+	/* FAULT_REASON2, 0x8c9 */
+	"N/A", "N/A", "N/A",
+	"Triggered by FAULT_N bus",
+	"Triggered by PBS WATCHDOG",
+	"PBS_NACK triggered by PBS NACK event",
+	"RESTART_PON triggered by RESTART PON",
+	"Triggered by OTST3 (over-temperature stage 3)",
+};
+
+#define SMB_PON_RSN(tbl, reg, val) \
+	smb_pon_reason_str(tbl, ARRAY_SIZE(tbl), reg, val)
+
+static const char *smb_pon_reason_str(const char * const *table, size_t len,
+				      unsigned int reg, unsigned int val)
+{
+	unsigned int first = reg < 0xc5 ? 0xc0 : 0xc5;
+	unsigned int index;
+
+	if (!val)
+		return "none";
+
+	index = (reg - first) * 8 + (ffs(val) - 1);
+	if (index >= len)
+		return "unknown";
+
+	return table[index];
+}
+
+static void smb_pon_dump(struct smb_chip *chip, struct regmap *regmap,
+			 const char *tag)
+{
+	unsigned int v[PM8150_PON_REASON_LAST - PM8150_PON_REASON1 + 1];
+	unsigned int base = PM8150_PON_BASE + PM8150_PON_REASON1;
+	char buf[768];
+	int i, n;
+
+	for (i = 0; i < ARRAY_SIZE(v); i++) {
+		if (regmap_read(regmap, base + i, &v[i]))
+			v[i] = 0;
+	}
+
+	n = scnprintf(buf, sizeof(buf),
+		      "c0=%02x(%s) c2=%02x(%s) c4=%02x(%s)",
+		      v[0x00], SMB_PON_RSN(smb_pon_reason, 0xc0, v[0x00]),
+		      v[0x02], SMB_PON_RSN(smb_pon_reason, 0xc2, v[0x02]),
+		      v[0x04], SMB_PON_RSN(smb_pon_reason, 0xc4, v[0x04]));
+	scnprintf(buf + n, sizeof(buf) - n,
+		  " c5=%02x(%s) c7=%02x(%s) c8=%02x(%s) c9=%02x(%s)",
+		  v[0x05], SMB_PON_RSN(smb_poff_reason, 0xc5, v[0x05]),
+		  v[0x07], SMB_PON_RSN(smb_poff_reason, 0xc7, v[0x07]),
+		  v[0x08], SMB_PON_RSN(smb_poff_reason, 0xc8, v[0x08]),
+		  v[0x09], SMB_PON_RSN(smb_poff_reason, 0xc9, v[0x09]));
+
+	dev_info(chip->dev, "%s PON reset reason: %s\n", tag, buf);
+}
+
+/*
+ * The PS_HOLD fingerprint observed on hardware comes from the primary PM8150
+ * (SID 0, qcom,pm8998-pon), not from the charger PMIC's own disabled PON.
+ * Look that block up best-effort; a missing node only skips the extra line.
+ */
+static void smb_pon_dump_primary(struct smb_chip *chip)
+{
+	struct device_node *np;
+	struct platform_device *pdev;
+	struct regmap *regmap;
+
+	np = of_find_compatible_node(NULL, NULL, "qcom,pm8998-pon");
+	if (!np)
+		return;
+
+	pdev = of_find_device_by_node(np);
+	of_node_put(np);
+	if (!pdev)
+		return;
+
+	regmap = dev_get_regmap(pdev->dev.parent, NULL);
+	if (!regmap)
+		regmap = dev_get_regmap(&pdev->dev, NULL);
+	if (regmap)
+		smb_pon_dump(chip, regmap, "PM8150 primary");
+
+	put_device(&pdev->dev);
+}
+
 static const struct power_supply_desc smb_psy_desc = {
 	.name = "SMB2_charger",
 	.type = POWER_SUPPLY_TYPE_USB,
@@ -1290,6 +1519,19 @@ static int smb_init_irq(struct smb_chip *chip, int *irq, const char *name,
 	return 0;
 }
 
+static int smb_init_diag_irq(struct smb_chip *chip, const char *name,
+			     irqreturn_t (*handler)(int irq, void *data))
+{
+	int rc;
+
+	rc = smb_init_irq(chip, NULL, name, handler);
+	/* Diagnostic IRQs are optional: other PMICs simply lack these names. */
+	if (rc == -ENXIO || rc == -ENODATA)
+		return 0;
+
+	return rc;
+}
+
 static int smb_probe(struct platform_device *pdev)
 {
 	struct power_supply_config supply_config = {};
@@ -1420,6 +1662,45 @@ static int smb_probe(struct platform_device *pdev)
 	if (rc < 0)
 		return rc;
 
+	/*
+	 * Observation-only power-path IRQs.  Each handler just logs the
+	 * block's INT_RT_STS; none of them writes a register or changes the
+	 * charging state machine.
+	 */
+	rc = smb_init_diag_irq(chip, "usbin-collapse",
+			       smb_handle_usbin_collapse);
+	if (rc < 0)
+		return rc;
+
+	rc = smb_init_diag_irq(chip, "usbin-uv", smb_handle_usbin_uv);
+	if (rc < 0)
+		return rc;
+
+	rc = smb_init_diag_irq(chip, "usbin-ov", smb_handle_usbin_ov);
+	if (rc < 0)
+		return rc;
+
+	rc = smb_init_diag_irq(chip, "switcher-power-ok",
+			       smb_handle_switcher_power_ok);
+	if (rc < 0)
+		return rc;
+
+	rc = smb_init_diag_irq(chip, "buck-oc", smb_handle_buck_oc);
+	if (rc < 0)
+		return rc;
+
+	rc = smb_init_diag_irq(chip, "vph-ov", smb_handle_vph_ov);
+	if (rc < 0)
+		return rc;
+
+	rc = smb_init_diag_irq(chip, "bat-temp", smb_handle_bat_temp);
+	if (rc < 0)
+		return rc;
+
+	rc = smb_init_diag_irq(chip, "bat-low", smb_handle_bat_low);
+	if (rc < 0)
+		return rc;
+
 	devm_device_init_wakeup(chip->dev);
 
 	rc = devm_pm_set_wake_irq(chip->dev, chip->cable_irq);
@@ -1472,6 +1753,17 @@ static int smb_probe(struct platform_device *pdev)
 
 	/* Initialise charger state */
 	schedule_delayed_work(&chip->status_change_work, 0);
+
+	/*
+	 * Decode the PON reason latches once per boot so the previous reset
+	 * can be attributed from persistent logs.  The charger PMIC's own PON
+	 * is read first; the primary PM8150 PON (the one that actually records
+	 * the PS_HOLD fingerprint) is read best-effort as well.  Read-only.
+	 */
+	if (of_device_is_compatible(chip->dev->of_node, "qcom,pm8150b-charger")) {
+		smb_pon_dump(chip, chip->regmap, "PM8150B");
+		smb_pon_dump_primary(chip);
+	}
 
 	return 0;
 }
